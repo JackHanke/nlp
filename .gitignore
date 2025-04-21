@@ -1,3 +1,5 @@
+# /*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -172,3 +174,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# !.gitignore
+
+hw1/data/*
+!hw1/data/.gitkeep
