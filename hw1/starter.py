@@ -9,10 +9,13 @@ import copy
 import math
 import pickle
 
+from tqdm import tqdm
+
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from torch.autograd import Variable
+from torcheval.metrics.text import Perplexity
 from transformers import GPT2TokenizerFast
 
 def read_corpus(filename,tokenizer):
@@ -219,66 +222,30 @@ class CosineWithRestarts(torch.optim.lr_scheduler._LRScheduler):
             self._last_restart = step
 
         return lrs
-    
-class EncoderLayer(nn.Module):
-    def __init__(self, d_model, heads, dropout=0.1):
-        super().__init__()
-        self.norm_1 = Norm(d_model)
-        self.norm_2 = Norm(d_model)
-        self.attn = MultiHeadAttention(heads, d_model, dropout=dropout)
-        self.ff = FeedForward(d_model, dropout=dropout)
-        self.dropout_1 = nn.Dropout(dropout)
-        self.dropout_2 = nn.Dropout(dropout)
-        
-    def forward(self, x, mask):
-        x2 = self.norm_1(x)
-        x = x + self.dropout_1(self.attn(x2,x2,x2,mask))
-        x2 = self.norm_2(x)
-        x = x + self.dropout_2(self.ff(x2))
-        return x
-    
+
 # build a decoder layer with two multi-head attention layers and
-# one feed-forward layer
+# one feed-forward layer   
+# modified for decoder-only  
 class DecoderLayer(nn.Module):
     def __init__(self, d_model, heads, dropout=0.1):
         super().__init__()
         self.norm_1 = Norm(d_model)
         self.norm_2 = Norm(d_model)
-        self.norm_3 = Norm(d_model)
         
         self.dropout_1 = nn.Dropout(dropout)
         self.dropout_2 = nn.Dropout(dropout)
-        self.dropout_3 = nn.Dropout(dropout)
         
         self.attn_1 = MultiHeadAttention(heads, d_model, dropout=dropout)
-        self.attn_2 = MultiHeadAttention(heads, d_model, dropout=dropout)
         self.ff = FeedForward(d_model, dropout=dropout)
 
-    def forward(self, x, e_outputs, src_mask, trg_mask):
+    def forward(self, x, trg_mask):
         x2 = self.norm_1(x)
         x = x + self.dropout_1(self.attn_1(x2, x2, x2, trg_mask))
         x2 = self.norm_2(x)
-        x = x + self.dropout_2(self.attn_2(x2, e_outputs, e_outputs, \
-        src_mask))
-        x2 = self.norm_3(x)
-        x = x + self.dropout_3(self.ff(x2))
-        return x    
-    
-class Encoder(nn.Module):
-    def __init__(self, vocab_size, d_model, N, heads, dropout):
-        super().__init__()
-        self.N = N
-        self.embed = Embedder(vocab_size, d_model)
-        self.pe = PositionalEncoder(d_model, dropout=dropout)
-        self.layers = get_clones(EncoderLayer(d_model, heads, dropout), N)
-        self.norm = Norm(d_model)
-    def forward(self, src, mask):
-        x = self.embed(src)
-        x = self.pe(x)
-        for i in range(self.N):
-            x = self.layers[i](x, mask)
-        return self.norm(x)
-    
+        x = x + self.dropout_2(self.ff(x2))
+        return x  
+
+# modified decoder for decoder-only
 class Decoder(nn.Module):
     def __init__(self, vocab_size, d_model, N, heads, dropout):
         super().__init__()
@@ -287,28 +254,25 @@ class Decoder(nn.Module):
         self.pe = PositionalEncoder(d_model, dropout=dropout)
         self.layers = get_clones(DecoderLayer(d_model, heads, dropout), N)
         self.norm = Norm(d_model)
-    def forward(self, trg, e_outputs, src_mask, trg_mask):
+    def forward(self, trg, trg_mask):
         x = self.embed(trg)
         x = self.pe(x)
         for i in range(self.N):
-            x = self.layers[i](x, e_outputs, src_mask, trg_mask)
+            x = self.layers[i](x, trg_mask)
         return self.norm(x)
 
+# modified transformer for decoder-only
 class Transformer(nn.Module):
     def __init__(self, src_vocab, trg_vocab, d_model, N, heads, dropout):
         super().__init__()
-        self.encoder = Encoder(src_vocab, d_model, N, heads, dropout)
         self.decoder = Decoder(trg_vocab, d_model, N, heads, dropout)
         self.out = nn.Linear(d_model, trg_vocab)
-    def forward(self, src, trg, src_mask, trg_mask):
-        e_outputs = self.encoder(src, src_mask)
-        #print("DECODER")
-        d_output = self.decoder(trg, e_outputs, src_mask, trg_mask)
+    def forward(self, trg, trg_mask):
+        d_output = self.decoder(trg, trg_mask)
         output = self.out(d_output)
         return output
 
 def get_model(opt, src_vocab, trg_vocab):
-    
     assert opt.d_model % opt.heads == 0
     assert opt.dropout < 1
 
@@ -326,36 +290,113 @@ def get_model(opt, src_vocab, trg_vocab):
     return model
     
 def train_model(model, opt):
-    
-    print("training model...")
     model.train()
     
-    # write code to:
     #  1. create a nopeak mask
+
+    # TODO what is target sequence size?
+    # trg_vocab is target vocab
+    size = target_seq.size(1) # get seq_len for matrix
+    nopeak_mask = np.triu(np.ones((1, size, size)), k=1).astype('uint8')
+    nopeak_mask = Variable(torch.from_numpy(nopeak_mask) == 0)
+    target_msk = target_msk & nopeak_mask
+
+    # make prediction dataloaders
+    from torch.utils.data import Dataset, DataLoader, random_split
+
+    class TokensDataset(Dataset):
+        def __init__(self, dataset):
+            self.dataset = dataset
+
+        def __len__(self):
+            return len(self.dataset)-1
+
+        def __getitem__(self, idx): # TODO make this correct
+            data = self.dataset[idx]
+            label = self.dataset[idx+1]
+            return data, label
+
+    train_dataset = TokensDataset(opt.train)
+    
+
     #  2. feed training data to the model in batches
-    #  3. send the indices of training tokens to the GPU
-    #  4. linearize the predictions and compute the loss against ground truth
-    #     (you can use F.cross_entropy or write your own code)
-    #  5. calculate and apply the gradients with loss.backward() and optimizer.step()
-    #  6. report intermediate trainining perplexity
-    #  7. generate a test perplexity once per training epoch by calling test_model()
-    #  8. save model weights to file specified in opt.savename
-    #  SEE trainer.py for examples of each of the above
+    train_loader = DataLoader(train_dataset, batch_size=opt.batchsize, shuffle=True)
+    
+
+    # cross entropy loss
+    loss_fn = torch.nn.CrossEntropyLoss()
+
+    for epoch in range(opt.epochs):
+        # training perplexity
+        train_metric = Perplexity()
+        prog_bar = tqdm(train_loader)
+        for batch_index, batch_data in prog_bar:
+            #  3. send the indices of training tokens to the GPU
+            batch_data.to_device(opt.device)
+            #  4. linearize the predictions and compute the loss against ground truth
+            #     (you can use F.cross_entropy or write your own code)
+
+            # TODO does linearize mean one hot? idk
+
+            # TODO inference
+            predictions = model.forward(
+                trg=None,
+                trg_mask=None,
+            )
+
+            # TODO loss
+            train_loss_val = loss_fn()
+            # TODO update perplexity metric
+            train_metric.update()
+            
+            #  5. calculate and apply the gradients with loss.backward() and optimizer.step()
+            train_loss_val.backward()
+            opt.optimizer.step()
+
+        #  6. report intermediate trainining perplexity
+        training_perplexity = train_metric.compute()
+
+        #  7. generate a test perplexity once per training epoch by calling test_model()
+        valid_perplexity = test_model(model=model, opt=opt, epoch=epoch)
+
+        #  8. save model weights to file specified in opt.savename
+        torch.save(model.state_dict(), opt.savename)
     
 def test_model(model, opt, epoch):
-    print("testing model...")
+    # write code to generate perplexity of test set
     model.eval()
     
-    # write code to generate perplexity of test set
+    metric = Perplexity()
+    if epoch >= 0:
+        valid_dataset = TokensDataset(opt.valid)
+        val_loader = DataLoader(val_dataset, batch_size=opt.batchsize, shuffle=False)
+        prog_bar = tqdm(val_loader)
+    # NOTE the starter code calls testing "epoch -1"
+    elif epoch < 0:
+        test_dataset = TokensDataset(opt.test)
+        test_loader = DataLoader(test_dataset, batch_size=opt.batchsize, shuffle=False)
+        prog_bar = tqdm(test_loader)
+
+
+    for batch_index, batch_data in prog_bar:
+        #  3. send the indices of training tokens to the GPU
+            batch_data.to_device(opt.device)
+
+            # TODO model inference 
+
+            # TODO update perplexity metric
+            train_metric.update()
+
+    perplexity_value = metric.compute()
     
     model.train()
+    return perplexity_value
 
 def main():
-    
     random.seed(10)
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('-no_cuda', action='store_true')
+    parser.add_argument('-no_cuda', action='store_true') # NOTE store true means "default false" ???
     parser.add_argument('-SGDR', action='store_true')
     parser.add_argument('-epochs', type=int, default=20)
     parser.add_argument('-d_model', type=int, default=512)
@@ -430,4 +471,27 @@ def main():
     test_model(model,opt,-1)
         
 if __name__ == "__main__":
-    main()        
+    main()
+    '''
+    debug command: 
+    
+    python3 starter.py \
+        -savename "saves/grp2_wiki2_model.pth" \
+        -batchsize 1 \
+        -n_layers 1 \
+        -epochs 1 \
+
+    full training command for wiki2:
+
+    python3 starter.py \
+        -savename "saves/grp2_wiki2_model.pth" \
+        -batchsize 8 \
+        
+    full training command for wiki103:
+    python3 starter.py \
+        -savename "saves/grp2_wiki2_model.pth" \
+        -batchsize 8 \
+        -epochs 1 \
+
+    '''
+    
