@@ -312,7 +312,7 @@ def train_model(model, opt):
             self.d_model = d_model
 
         def __len__(self):
-            return len(self.dataset)
+            return len(self.dataset)//self.d_model # NOTE again idk if this is right
 
         def __getitem__(self, idx): # TODO I'm not sure this is correct, should it be every sequence?
             data = torch.LongTensor(self.dataset[idx*self.d_model:(idx+1)*self.d_model]) # sequence of context length d_model
@@ -484,13 +484,14 @@ def main():
 if __name__ == "__main__":
     main()
     '''
-    debug command: 
+    debug command for making tiny model, good for local dev: 
     
     python3 starter.py \
         -savename "saves/grp2_wiki2_model.pth" \
         -batchsize 1 \
         -n_layers 1 \
-        - d_model 30 \
+        -d_model 16 \
+        -batch_size 2 \
         -epochs 1 \
         -no_cuda
 

@@ -301,7 +301,6 @@ def train_model(model, opt):
     size = model.d_model # get seq_len for matrix
     nopeak_mask = np.triu(np.ones((1, size, size)), k=1).astype('uint8')
     nopeak_mask = Variable(torch.from_numpy(nopeak_mask) == 0)
-    input(nopeak_mask)
 
     # make prediction dataloaders
     from torch.utils.data import Dataset, DataLoader, random_split
@@ -312,7 +311,7 @@ def train_model(model, opt):
             self.d_model = d_model
 
         def __len__(self):
-            return len(self.dataset)
+            return len(self.dataset)//self.d_model # NOTE again idk if this is right
 
         def __getitem__(self, idx): # TODO I'm not sure this is correct, should it be every sequence?
             data = torch.LongTensor(self.dataset[idx*self.d_model:(idx+1)*self.d_model]) # sequence of context length d_model
