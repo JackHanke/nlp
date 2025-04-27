@@ -484,14 +484,13 @@ def main():
 if __name__ == "__main__":
     main()
     '''
-    debug command for making tiny model, good for local dev: 
+    debug command: 
     
     python3 starter.py \
         -savename "saves/grp2_wiki2_model.pth" \
         -batchsize 1 \
         -n_layers 1 \
-        -d_model 16 \
-        -batch_size 2 \
+        - d_model 30 \
         -epochs 1 \
         -no_cuda
 
