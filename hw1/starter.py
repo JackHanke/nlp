@@ -539,7 +539,7 @@ def main():
     plt.legend()
     plt.ylabel(f'Perplexity')
     plt.xlabel(f'Epochs')
-    plt.title(f'wiki2 Training/Validation Curves')
+    plt.title(f'{opt.dataset} Training/Validation Curves')
     # plt.show()
     plt.savefig(f'./wiki2_learning_curve.png')
 
