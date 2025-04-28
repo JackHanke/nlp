@@ -17,6 +17,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 from torcheval.metrics.text import Perplexity
 from transformers import GPT2TokenizerFast
+from torch.utils.data import Dataset, DataLoader, random_split
 
 def read_corpus(filename,tokenizer):
     seq = []
@@ -247,11 +248,11 @@ class DecoderLayer(nn.Module):
 
 # modified decoder for decoder-only
 class Decoder(nn.Module):
-    def __init__(self, vocab_size, d_model, N, heads, dropout):
+    def __init__(self, vocab_size, d_model, N, heads, dropout, seqlen):
         super().__init__()
         self.N = N
         self.embed = Embedder(vocab_size, d_model)
-        self.pe = PositionalEncoder(d_model, dropout=dropout)
+        self.pe = PositionalEncoder(d_model, max_seq_len=seqlen, dropout=dropout)
         self.layers = get_clones(DecoderLayer(d_model, heads, dropout), N)
         self.norm = Norm(d_model)
     def forward(self, trg, trg_mask):
@@ -263,11 +264,12 @@ class Decoder(nn.Module):
 
 # modified transformer for decoder-only
 class Transformer(nn.Module):
-    def __init__(self, src_vocab, trg_vocab, d_model, N, heads, dropout):
+    def __init__(self, src_vocab, trg_vocab, d_model, N, heads, dropout, seqlen):
         super().__init__()
         self.d_model = d_model
         self.N = N
-        self.decoder = Decoder(trg_vocab, d_model, N, heads, dropout)
+        self.seqlen = seqlen
+        self.decoder = Decoder(trg_vocab, d_model, N, heads, dropout, seqlen) 
         self.out = nn.Linear(d_model, trg_vocab)
     def forward(self, trg, trg_mask):
         d_output = self.decoder(trg, trg_mask)
@@ -278,7 +280,7 @@ def get_model(opt, src_vocab, trg_vocab):
     assert opt.d_model % opt.heads == 0
     assert opt.dropout < 1
 
-    model = Transformer(src_vocab, trg_vocab, opt.d_model, opt.n_layers, opt.heads, opt.dropout)
+    model = Transformer(src_vocab, trg_vocab, opt.d_model, opt.n_layers, opt.heads, opt.dropout, opt.seqlen)
     model.to(opt.device)
        
     if opt.loadname is not None:
@@ -290,42 +292,49 @@ def get_model(opt, src_vocab, trg_vocab):
                 nn.init.xavier_uniform_(p) 
     
     return model
+
+# 
+class TokensDataset(Dataset):
+    def __init__(self, dataset, seqlen):
+        self.dataset = dataset
+        self.seqlen = seqlen
+
+    def __len__(self):
+        # return -1 + len(self.dataset)//self.max_seq_length # NOTE again idk if this is right
+        # return len(self.dataset) - self.seqlen - 1 # NOTE again idk if this is right
+        return 15
+
+    def __getitem__(self, idx): 
+        # TODO I'm not sure which we should do, chose sliding window for now
+        
+        # independent chunking 
+        # data = torch.LongTensor(self.dataset[idx*self.d_model:(idx+1)*self.d_model]) # sequence of context length d_model
+        # label = torch.LongTensor([self.dataset[(idx+1)*self.d_model]]) # next token prediction
+
+        # sliding window 
+        data = torch.tensor(self.dataset[idx:idx+self.seqlen], dtype=torch.int64) # sequence of context length d_model
+        # label = torch.tensor(self.dataset[idx+1:idx+self.seqlen+1], dtype=torch.int64) # sequence of context length d_model
+        label = torch.tensor([self.dataset[idx+self.seqlen]], dtype=torch.int64) # next token prediction
+        return data, label
     
 def train_model(model, opt):
     model.train()
     
     #  1. create a nopeak mask
-
-    # TODO what is target sequence size?
-    # trg_vocab is target vocab
-    size = model.d_model # get seq_len for matrix
+    size = model.seqlen # get seq_len for matrix
     nopeak_mask = np.triu(np.ones((1, size, size)), k=1).astype('uint8')
     nopeak_mask = Variable(torch.from_numpy(nopeak_mask) == 0)
 
-    # make prediction dataloaders
-    from torch.utils.data import Dataset, DataLoader, random_split
-
-    class TokensDataset(Dataset):
-        def __init__(self, dataset, d_model):
-            self.dataset = dataset
-            self.d_model = d_model
-
-        def __len__(self):
-            return len(self.dataset)//self.d_model # NOTE again idk if this is right
-
-        def __getitem__(self, idx): # TODO I'm not sure this is correct, should it be every sequence?
-            data = torch.LongTensor(self.dataset[idx*self.d_model:(idx+1)*self.d_model]) # sequence of context length d_model
-            label = torch.LongTensor(self.dataset[(idx+1)*self.d_model]) # next token prediction
-            return data, label
-
-    train_dataset = TokensDataset(dataset=opt.train, d_model=model.d_model)
+    # 
+    train_dataset = TokensDataset(dataset=opt.train, seqlen=opt.seqlen)
     
     #  2. feed training data to the model in batches
     train_loader = DataLoader(train_dataset, batch_size=opt.batchsize, shuffle=True)
-    
+
     # cross entropy loss
     loss_fn = torch.nn.CrossEntropyLoss()
 
+    best_valid_perplexity = float('inf')
     for epoch in range(opt.epochs):
         # training perplexity
         train_metric = Perplexity()
@@ -336,26 +345,27 @@ def train_model(model, opt):
             #  3. send the indices of training tokens to the GPU
             context_tokens.to(opt.device)
             next_tokens.to(opt.device)
-            #  4. linearize the predictions and compute the loss against ground truth
-            #     (you can use F.cross_entropy or write your own code)
 
-            # TODO does linearize mean one hot? idk but thats what I'm doin
-
-            context_matrix = torch.nn.functional.one_hot(context_tokens, num_classes=opt.vocab_size)
-
-
-            # TODO inference
+            # inference
             predictions = model.forward(
-                trg=context_matrix,
+                trg=context_tokens,
                 trg_mask=nopeak_mask,
             )
 
-            input(predictions.shape)
+            # create shifted context + next token
 
-            # TODO loss
-            train_loss_val = loss_fn(predictions, next_tokens)
-            # TODO update perplexity metric
-            train_metric.update()
+            # input needs to be batch by vocab by seqlen
+            # target needs to be batch by seqlen
+
+            shifted_context = torch.cat((context_tokens[:,1:], next_tokens), dim=1)
+            # one hot
+            # shifted_context_matrix = torch.nn.functional.one_hot(shifted_context, num_classes=opt.vocab_size)
+
+            #  4. linearize the predictions and compute the loss against ground truth
+            # loss
+            train_loss_val = loss_fn(predictions.permute(0,2,1), shifted_context.long())
+            # update perplexity metric
+            train_metric.update(predictions, shifted_context)
             
             #  5. calculate and apply the gradients with loss.backward() and optimizer.step()
             train_loss_val.backward()
@@ -368,32 +378,55 @@ def train_model(model, opt):
         valid_perplexity = test_model(model=model, opt=opt, epoch=epoch)
 
         #  8. save model weights to file specified in opt.savename
-        torch.save(model.state_dict(), opt.savename)
+        if valid_perplexity < best_valid_perplexity:
+            torch.save(model.state_dict(), opt.savename)
+            best_valid_perplexity = valid_perplexity
     
 def test_model(model, opt, epoch):
     # write code to generate perplexity of test set
     model.eval()
     
     metric = Perplexity()
+
+    # set progress
     if epoch >= 0:
-        valid_dataset = TokensDataset(opt.valid)
-        val_loader = DataLoader(val_dataset, batch_size=opt.batchsize, shuffle=False)
+        valid_dataset = TokensDataset(opt.valid, model.seqlen)
+        val_loader = DataLoader(valid_dataset, batch_size=opt.batchsize, shuffle=False)
         prog_bar = tqdm(val_loader)
     # NOTE the starter code calls testing "epoch -1"
     elif epoch < 0:
-        test_dataset = TokensDataset(opt.test)
+        test_dataset = TokensDataset(opt.test, model.seqlen)
         test_loader = DataLoader(test_dataset, batch_size=opt.batchsize, shuffle=False)
         prog_bar = tqdm(test_loader)
 
+    size = model.seqlen # get seq_len for matrix
+    nopeak_mask = np.triu(np.ones((1, size, size)), k=1).astype('uint8')
+    nopeak_mask = Variable(torch.from_numpy(nopeak_mask) == 0)
 
-    for batch_index, batch_data in prog_bar:
-        #  3. send the indices of training tokens to the GPU
-            batch_data.to_device(opt.device)
+    for batch_index, (context_tokens, next_tokens) in enumerate(prog_bar):
+            # zero gradients
+            opt.optimizer.zero_grad()
+            #  3. send the indices of training tokens to the GPU
+            context_tokens.to(opt.device)
+            next_tokens.to(opt.device)
 
-            # TODO model inference 
+            # inference
+            predictions = model.forward(
+                trg=context_tokens,
+                trg_mask=nopeak_mask,
+            )
 
-            # TODO update perplexity metric
-            train_metric.update()
+            # create shifted context + next token
+            next_tokens = next_tokens
+            shifted_context = torch.cat((context_tokens[:,1:], next_tokens), dim=1)
+            # one hot
+            shifted_context_matrix = torch.nn.functional.one_hot(shifted_context, num_classes=opt.vocab_size)
+
+            #  4. linearize the predictions and compute the loss against ground truth
+            # loss
+            # test_loss_val = loss_fn(predictions, shifted_context_matrix.float())
+            # update perplexity metric
+            metric.update(predictions, shifted_context)
 
     perplexity_value = metric.compute()
     
@@ -469,11 +502,11 @@ def main():
     if opt.SGDR == True:
         opt.sched = CosineWithRestarts(opt.optimizer, T_max=opt.train_len)
 
-    if opt.savename is not None:
-        try:
-            os.mkdir(opt.savename)
-        except:
-            nothing = 1
+    # if opt.savename is not None:
+    #     try:
+    #         os.mkdir(opt.savename)
+    #     except:
+    #         nothing = 1
     opt.src_pad = 0
     opt.trg_pad = 0
             
@@ -482,27 +515,35 @@ def main():
         
 if __name__ == "__main__":
     main()
+
+    # NOTE d_model is the embedding dimension
+
+    # HACK tuah
+
     '''
     debug command for making tiny model, good for local dev: 
     
     python3 starter.py \
-        -savename "saves/grp2_wiki2_model.pth" \
-        -batchsize 1 \
+        -dir_name model_wiki2 \
+        -savename "saved/model_wiki2/model.pth" \
+        -batchsize 2 \
         -n_layers 1 \
         -d_model 16 \
-        -batch_size 2 \
         -epochs 1 \
         -no_cuda
 
     full training command for wiki2:
 
     python3 starter.py \
-        -savename "saves/grp2_wiki2_model.pth" \
+        -dir_name model_wiki2 \
+        -savename "saved/model_wiki2/model.pth" \
         -batchsize 8 \
         
     full training command for wiki103:
+
     python3 starter.py \
-        -savename "saves/grp2_wiki2_model.pth" \
+        -dir_name model_wiki103 \
+        -savename "saved/model_wiki103/model.pth" \
         -batchsize 8 \
         -epochs 1 \
 
