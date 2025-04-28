@@ -19,8 +19,6 @@ from torcheval.metrics.text import Perplexity
 from transformers import GPT2TokenizerFast
 from torch.utils.data import Dataset, DataLoader, random_split
 
-from torch.amp import autocast, GradScaler
-
 def read_corpus(filename,tokenizer):
     seq = []
     with open(filename,'rt') as f:
@@ -90,8 +88,7 @@ def attention(q, k, v, d_k, mask=None, dropout=None):
     
     if mask is not None:
         mask = mask.unsqueeze(1)
-        # scores = scores.masked_fill(mask == 0, -1e9)
-        scores = scores.masked_fill(mask == 0, -1e4)
+        scores = scores.masked_fill(mask == 0, -1e9)
     
     scores = F.softmax(scores, dim=-1)
     
@@ -298,29 +295,26 @@ def get_model(opt, src_vocab, trg_vocab):
 
 # 
 class TokensDataset(Dataset):
-    def __init__(self, dataset, seqlen, device = 'cpu'):
-        # self.dataset = torch.tensor(dataset, dtype=torch.int64).to(device)
+    def __init__(self, dataset, seqlen):
         self.dataset = dataset
         self.seqlen = seqlen
 
     def __len__(self):
-
-        return -1 + len(self.dataset)//self.seqlen # NOTE again idk if this is right
-
-        # return len(self.dataset) - self.seqlen - 1 # NOTE again idk if this is right
-
+        # return -1 + len(self.dataset)//self.max_seq_length # NOTE again idk if this is right
+        return len(self.dataset) - self.seqlen - 1 # NOTE again idk if this is right
         # return 15
 
     def __getitem__(self, idx): 
-        # independent chunks
-        data = torch.tensor(self.dataset[idx*self.seqlen:(idx+1)*self.seqlen], dtype=torch.int64) # sequence of context length d_model
-        label = torch.tensor([self.dataset[(idx+1)*self.seqlen]], dtype=torch.int64) # next token prediction
-        # sliding window 
-        # data = torch.tensor(self.dataset[idx:idx+self.seqlen], dtype=torch.int64) # sequence of context length d_model
-        # label = torch.tensor([self.dataset[idx+self.seqlen]], dtype=torch.int64) # next token prediction
+        # TODO I'm not sure which we should do, chose sliding window for now
+        
+        # independent chunking 
+        # data = torch.LongTensor(self.dataset[idx*self.d_model:(idx+1)*self.d_model]) # sequence of context length d_model
+        # label = torch.LongTensor([self.dataset[(idx+1)*self.d_model]]) # next token prediction
 
-        # data = self.dataset[idx:idx+self.seqlen]
-        # label = [self.dataset[idx+self.seqlen]]
+        # sliding window 
+        data = torch.tensor(self.dataset[idx:idx+self.seqlen], dtype=torch.int64) # sequence of context length d_model
+        # label = torch.tensor(self.dataset[idx+1:idx+self.seqlen+1], dtype=torch.int64) # sequence of context length d_model
+        label = torch.tensor([self.dataset[idx+self.seqlen]], dtype=torch.int64) # next token prediction
         return data, label
     
 def train_model(model, opt):
@@ -329,38 +323,30 @@ def train_model(model, opt):
     #  1. create a nopeak mask
     size = model.seqlen # get seq_len for matrix
     nopeak_mask = np.triu(np.ones((1, size, size)), k=1).astype('uint8')
-    nopeak_mask = Variable(torch.from_numpy(nopeak_mask) == 0).to(opt.device)
+    nopeak_mask = Variable(torch.from_numpy(nopeak_mask) == 0)
 
     # 
-    train_dataset = TokensDataset(dataset=opt.train, seqlen=opt.seqlen, device=opt.device)
+    train_dataset = TokensDataset(dataset=opt.train, seqlen=opt.seqlen)
     
     #  2. feed training data to the model in batches
-    train_loader = DataLoader(train_dataset, batch_size=opt.batchsize, shuffle=True, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=opt.batchsize, shuffle=True)
 
     # cross entropy loss
     loss_fn = torch.nn.CrossEntropyLoss()
 
     training_perplexities, valid_perplexities = [], []
 
-    scaler = GradScaler()
-
     best_valid_perplexity = float('inf')
     for epoch in range(opt.epochs):
         # training perplexity
         train_metric = Perplexity()
-        train_metric.to(opt.device)
         prog_bar = tqdm(train_loader)
         for batch_index, (context_tokens, next_tokens) in enumerate(prog_bar):
-            # with autocast('cuda'):
-            # scaler.scale(train_loss_val).backward()
-            # scaler.step(opt.optimizer)
-            # scaler.update()
-
             # zero gradients
             opt.optimizer.zero_grad()
             #  3. send the indices of training tokens to the GPU
-            context_tokens = context_tokens.to(opt.device)
-            next_tokens = next_tokens.to(opt.device)
+            context_tokens.to(opt.device)
+            next_tokens.to(opt.device)
 
             # inference
             predictions = model.forward(
@@ -369,31 +355,31 @@ def train_model(model, opt):
             )
 
             # create shifted context + next token
-            shifted_context = torch.roll(context_tokens, shifts=1, dims=1).to(opt.device)
-            shifted_context[:, -1] = next_tokens.squeeze()
-            # shifted_context = torch.cat((context_tokens[:,1:], next_tokens), dim=1).to(opt.device)
+
+            # input needs to be batch by vocab by seqlen
+            # target needs to be batch by seqlen
+
+            shifted_context = torch.cat((context_tokens[:,1:], next_tokens), dim=1)
+            # one hot
+            # shifted_context_matrix = torch.nn.functional.one_hot(shifted_context, num_classes=opt.vocab_size)
 
             #  4. linearize the predictions and compute the loss against ground truth
             # loss
             train_loss_val = loss_fn(predictions.permute(0,2,1), shifted_context.long())
             # update perplexity metric
             train_metric.update(predictions, shifted_context)
-
+            
             #  5. calculate and apply the gradients with loss.backward() and optimizer.step()
             train_loss_val.backward()
             opt.optimizer.step()
 
         #  6. report intermediate trainining perplexity
         training_perplexity = train_metric.compute()
-        val = training_perplexity.cpu().item()
-        prog_bar.set_description(f'Train epoch: {epoch} Perplexity: {val}')
-        training_perplexities.append(val)
+        training_perplexities.append(training_perplexity)
 
         #  7. generate a test perplexity once per training epoch by calling test_model()
         valid_perplexity = test_model(model=model, opt=opt, epoch=epoch)
-        val = valid_perplexity.cpu().item()
-        prog_bar.set_description(f'Val epoch: {epoch} Perplexity: {val}')
-        valid_perplexities.append(val)
+        valid_perplexities.append(valid_perplexity)
 
         #  8. save model weights to file specified in opt.savename
         if valid_perplexity < best_valid_perplexity:
@@ -401,37 +387,34 @@ def train_model(model, opt):
             best_valid_perplexity = valid_perplexity
     
     return training_perplexities, valid_perplexities
-
-@torch.no_grad()
+    
 def test_model(model, opt, epoch):
     # write code to generate perplexity of test set
-    
     model.eval()
     
     metric = Perplexity()
-    metric.to(opt.device)
 
     # set progress
     if epoch >= 0:
-        valid_dataset = TokensDataset(opt.valid, model.seqlen, device=opt.device)
+        valid_dataset = TokensDataset(opt.valid, model.seqlen)
         val_loader = DataLoader(valid_dataset, batch_size=opt.batchsize, shuffle=False)
         prog_bar = tqdm(val_loader)
     # NOTE the starter code calls testing "epoch -1"
     elif epoch < 0:
-        test_dataset = TokensDataset(opt.test, model.seqlen, device=opt.device)
+        test_dataset = TokensDataset(opt.test, model.seqlen)
         test_loader = DataLoader(test_dataset, batch_size=opt.batchsize, shuffle=False)
         prog_bar = tqdm(test_loader)
 
     size = model.seqlen # get seq_len for matrix
     nopeak_mask = np.triu(np.ones((1, size, size)), k=1).astype('uint8')
-    nopeak_mask = Variable(torch.from_numpy(nopeak_mask) == 0).to(opt.device)
+    nopeak_mask = Variable(torch.from_numpy(nopeak_mask) == 0)
 
     for batch_index, (context_tokens, next_tokens) in enumerate(prog_bar):
             # zero gradients
             opt.optimizer.zero_grad()
             #  3. send the indices of training tokens to the GPU
-            context_tokens = context_tokens.to(opt.device)
-            next_tokens = next_tokens.to(opt.device)
+            context_tokens.to(opt.device)
+            next_tokens.to(opt.device)
 
             # inference
             predictions = model.forward(
@@ -442,7 +425,12 @@ def test_model(model, opt, epoch):
             # create shifted context + next token
             next_tokens = next_tokens
             shifted_context = torch.cat((context_tokens[:,1:], next_tokens), dim=1)
+            # one hot
+            shifted_context_matrix = torch.nn.functional.one_hot(shifted_context, num_classes=opt.vocab_size)
 
+            #  4. linearize the predictions and compute the loss against ground truth
+            # loss
+            # test_loss_val = loss_fn(predictions, shifted_context_matrix.float())
             # update perplexity metric
             metric.update(predictions, shifted_context)
 
@@ -531,6 +519,9 @@ def main():
     train_perplexities, valid_perplexities = train_model(model,opt)
     test_perplexity = test_model(model,opt,-1)
 
+    print(train_perplexities)
+    print(valid_perplexities)
+
     # learning curve plotting
     plt.plot([i+1 for i in range(len(train_perplexities))],[val for val in train_perplexities],label=f'Train Perplexity')
     plt.plot([i+1 for i in range(len(valid_perplexities))],[val for val in valid_perplexities],label=f'Validation Perplexity')
@@ -538,15 +529,13 @@ def main():
     plt.ylabel(f'Perplexity')
     plt.xlabel(f'Epochs')
     plt.title(f'wiki2 Training/Validation Curves')
-    # plt.show()
+    plt.show()
     plt.savefig(f'./wiki2_learning_curve.png')
 
     print(f'Test perplexity: {test_perplexity}')
         
 if __name__ == "__main__":
-    # with torch.autograd.profiler.profile(use_cuda=True) as prof:
     main()
-    # print(prof.key_averages().table(sort_by="cuda_time_total"))
 
     # NOTE d_model is the embedding dimension
 
