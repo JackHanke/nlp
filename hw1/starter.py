@@ -8,7 +8,7 @@ import time
 import copy
 import math
 import pickle
-
+import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 import torch
@@ -334,6 +334,8 @@ def train_model(model, opt):
     # cross entropy loss
     loss_fn = torch.nn.CrossEntropyLoss()
 
+    training_perplexities, valid_perplexities = [], []
+
     best_valid_perplexity = float('inf')
     for epoch in range(opt.epochs):
         # training perplexity
@@ -373,14 +375,18 @@ def train_model(model, opt):
 
         #  6. report intermediate trainining perplexity
         training_perplexity = train_metric.compute()
+        training_perplexities.append(training_perplexity)
 
         #  7. generate a test perplexity once per training epoch by calling test_model()
         valid_perplexity = test_model(model=model, opt=opt, epoch=epoch)
+        valid_perplexities.append(valid_perplexity)
 
         #  8. save model weights to file specified in opt.savename
         if valid_perplexity < best_valid_perplexity:
             torch.save(model.state_dict(), opt.savename)
             best_valid_perplexity = valid_perplexity
+    
+    return training_perplexities, valid_perplexities
     
 def test_model(model, opt, epoch):
     # write code to generate perplexity of test set
@@ -510,8 +516,23 @@ def main():
     opt.src_pad = 0
     opt.trg_pad = 0
             
-    train_model(model,opt)
-    test_model(model,opt,-1)
+    train_perplexities, valid_perplexities = train_model(model,opt)
+    test_perplexity = test_model(model,opt,-1)
+
+    print(train_perplexities)
+    print(valid_perplexities)
+
+    # learning curve plotting
+    plt.plot([i+1 for i in range(len(train_perplexities))],[val for val in train_perplexities],label=f'Train Perplexity')
+    plt.plot([i+1 for i in range(len(valid_perplexities))],[val for val in valid_perplexities],label=f'Validation Perplexity')
+    plt.legend()
+    plt.ylabel(f'Perplexity')
+    plt.xlabel(f'Epochs')
+    plt.title(f'wiki2 Training/Validation Curves')
+    plt.show()
+    plt.savefig(f'./wiki2_learning_curve.png')
+
+    print(f'Test perplexity: {test_perplexity}')
         
 if __name__ == "__main__":
     main()
@@ -529,7 +550,7 @@ if __name__ == "__main__":
         -batchsize 2 \
         -n_layers 1 \
         -d_model 16 \
-        -epochs 1 \
+        -epochs 2 \
         -no_cuda
 
     full training command for wiki2:
