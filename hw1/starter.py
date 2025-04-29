@@ -310,17 +310,17 @@ class TokensDataset(Dataset):
 
     def __len__(self):
 
-        return -1 + len(self.dataset)//self.seqlen # NOTE again idk if this is right
+        # return -1 + len(self.dataset)//self.seqlen # NOTE again idk if this is right
 
-        # return len(self.dataset) - self.seqlen - 1 # NOTE again idk if this is right
+        return len(self.dataset) - self.seqlen - 1 # NOTE again idk if this is right
 
     def __getitem__(self, idx): 
         # independent chunks
-        data = torch.tensor(self.dataset[idx*self.seqlen:(idx+1)*self.seqlen], dtype=torch.int64) # sequence of context length d_model
-        label = torch.tensor([self.dataset[(idx+1)*self.seqlen]], dtype=torch.int64) # next token prediction
+        # data = torch.tensor(self.dataset[idx*self.seqlen:(idx+1)*self.seqlen], dtype=torch.int64) # sequence of context length d_model
+        # label = torch.tensor([self.dataset[(idx+1)*self.seqlen]], dtype=torch.int64) # next token prediction
         # sliding window 
-        # data = torch.tensor(self.dataset[idx:idx+self.seqlen], dtype=torch.int64) # sequence of context length d_model
-        # label = torch.tensor([self.dataset[idx+self.seqlen]], dtype=torch.int64) # next token prediction
+        data = torch.tensor(self.dataset[idx:idx+self.seqlen], dtype=torch.int64) # sequence of context length d_model
+        label = torch.tensor([self.dataset[idx+self.seqlen]], dtype=torch.int64) # next token prediction
 
         # data = self.dataset[idx:idx+self.seqlen]
         # label = [self.dataset[idx+self.seqlen]]
