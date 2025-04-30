@@ -572,7 +572,7 @@ if __name__ == "__main__":
     python3 starter.py \
         -dir_name model_wiki2 \
         -savename "saved/model_wiki2/model.pth" \
-        -batchsize 8
+        -batchsize 648
         
     full training command for wiki103:
 
