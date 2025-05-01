@@ -21,40 +21,27 @@ from torch.utils.data import Dataset, DataLoader, random_split
 
 from torch.amp import autocast, GradScaler
 
+# read corpus and structure as tensor
 def read_corpus(filename, tokenizer):
-    """Reads a text file and returns a list of token IDs."""
     seq = []
     with open(filename, 'rt', encoding='utf-8') as f:
         for line in f:
-            line = line.strip() # Remove leading/trailing whitespace including newlines
-            if line: # Process non-empty lines
+            line = line.strip() 
+            if line: 
                 tokens = tokenizer(line)
                 seq.extend(tokens['input_ids'])
-    print(f"Read {len(seq)} tokens from {filename}")
-    return torch.tensor(seq, dtype=torch.long) # Return as tensor
+    return torch.tensor(seq, dtype=torch.long)
 
+# sequentially loop over batch 
 def get_batch(data, seq_len, batch_size, device):
-    """Generates batches of data for training or evaluation."""
-    # Line Change: Added this function for data batching (Step 1)
     n_batches = data.size(0) // (seq_len * batch_size)
-    data = data[:n_batches * batch_size * seq_len] # Trim excess data
-    data = data.view(batch_size, -1) # Reshape into batches
+    data = data[:n_batches * batch_size * seq_len]
+    data = data.view(batch_size, -1)
 
     for i in range(0, data.size(1) - seq_len, seq_len):
         x = data[:, i:i+seq_len]
-        y = data[:, i+1:i+1+seq_len] # Target is shifted by one
+        y = data[:, i+1:i+1+seq_len]
         yield x.to(device), y.to(device)
-
-# 1.7 its per second for 16 batchsize
-# def read_corpus(filename,tokenizer):
-#     seq = []
-#     with open(filename,'rt') as f:
-#         for line in f:
-#             line = line.replace('\n','')
-#             tokens = tokenizer(line)
-#             for t in tokens['input_ids']:
-#                 seq.append(t)
-#     return(seq)
 
 class Embedder(nn.Module):
     def __init__(self, vocab_size, d_model):
@@ -112,7 +99,9 @@ class Norm(nn.Module):
 
 def attention(q, k, v, d_k, mask=None, dropout=None):
     
-    scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
+    # scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
+    scores = torch.cdist(q , k, p=2)
+    # input(scores)
     
     if mask is not None:
         mask = mask.unsqueeze(1)
@@ -326,42 +315,9 @@ def get_model(opt, src_vocab, trg_vocab):
     
     return model
 
-# 
-class TokensDataset(Dataset):
-    def __init__(self, dataset, seqlen, device = 'cpu'):
-        # self.dataset = torch.tensor(dataset, dtype=torch.int64).to(device)
-        self.dataset = dataset
-        self.seqlen = seqlen
-
-    def __len__(self):
-
-        # return -1 + len(self.dataset)//self.seqlen # NOTE again idk if this is right
-
-        return len(self.dataset) - self.seqlen - 1 # NOTE again idk if this is right
-
-    def __getitem__(self, idx): 
-        # independent chunks
-        # data = torch.tensor(self.dataset[idx*self.seqlen:(idx+1)*self.seqlen], dtype=torch.int64) # sequence of context length d_model
-        # label = torch.tensor([self.dataset[(idx+1)*self.seqlen]], dtype=torch.int64) # next token prediction
-        # sliding window 
-        data = torch.tensor(self.dataset[idx:idx+self.seqlen], dtype=torch.int64) # sequence of context length d_model
-        label = torch.tensor([self.dataset[idx+self.seqlen]], dtype=torch.int64) # next token prediction
-
-        # data = self.dataset[idx:idx+self.seqlen]
-        # label = [self.dataset[idx+self.seqlen]]
-        return data, label
     
 def train_model(model, opt):
     model.train()
-
-    # 
-    # train_dataset = TokensDataset(dataset=opt.train, seqlen=opt.seqlen, device=opt.device)
-    
-    # #  2. feed training data to the model in batches
-    # train_loader = DataLoader(train_dataset, batch_size=opt.batchsize, shuffle=True, num_workers=4, pin_memory=True)
-
-    # cross entropy loss
-    loss_fn = torch.nn.CrossEntropyLoss()
 
     training_perplexities, valid_perplexities = [], []
 
@@ -372,12 +328,10 @@ def train_model(model, opt):
         # training perplexity
         train_metric = Perplexity()
         train_metric.to(opt.device)
-        # prog_bar = tqdm(train_loader)
-
 
         # Get data batches
         data_iter = get_batch(opt.train, opt.seqlen, opt.batchsize, opt.device)
-        prog_bar = tqdm(enumerate(data_iter), total=2377402)
+        prog_bar = tqdm(enumerate(data_iter))
         
 
         for i, (x_batch, y_batch) in prog_bar:
@@ -392,50 +346,15 @@ def train_model(model, opt):
                 #  4. linearize the predictions and compute the loss against ground truth
                 # loss
                 train_loss_val = F.cross_entropy(predictions.view(-1, opt.vocab_size), y_batch.view(-1), ignore_index=-1) # Assuming -1 is not a valid token ID
-                # train_loss_val = loss_fn(predictions.permute(0,2,1), shifted_context.long())
+
                 prog_bar.set_description(f'Loss: {train_loss_val:.6f}')
                 # update perplexity metric
                 train_metric.update(predictions, y_batch)
 
             #  5. calculate and apply the gradients with loss.backward() and optimizer.step()
-            # train_loss_val.backward()
-            # opt.optimizer.step()
             scaler.scale(train_loss_val).backward()
             scaler.step(opt.optimizer)
             scaler.update()
-
-        # for batch_index, (context_tokens, next_tokens) in enumerate(prog_bar):
-        #     # autocast for lower precision training
-        #     with autocast(device_type=context_tokens.device.type, dtype=torch.float16):
-        #         # zero gradients
-        #         opt.optimizer.zero_grad()
-        #         #  3. send the indices of training tokens to the GPU
-        #         context_tokens = context_tokens.to(opt.device)
-        #         next_tokens = next_tokens.to(opt.device)
-
-        #         # inference
-        #         predictions = model.forward(
-        #             trg=context_tokens,
-        #         )
-
-        #         # create shifted context + next token
-        #         shifted_context = torch.roll(context_tokens, shifts=1, dims=1).to(opt.device)
-        #         shifted_context[:, -1] = next_tokens.squeeze()
-        #         # shifted_context = torch.cat((context_tokens[:,1:], next_tokens), dim=1).to(opt.device)
-
-        #         #  4. linearize the predictions and compute the loss against ground truth
-        #         # loss
-        #         train_loss_val = loss_fn(predictions.permute(0,2,1), shifted_context.long())
-        #         prog_bar.set_description(f'Loss: {train_loss_val:.6f}')
-        #         # update perplexity metric
-        #         train_metric.update(predictions, shifted_context)
-
-            #  5. calculate and apply the gradients with loss.backward() and optimizer.step()
-            # train_loss_val.backward()
-            # opt.optimizer.step()
-            # scaler.scale(train_loss_val).backward()
-            # scaler.step(opt.optimizer)
-            # scaler.update()
 
         #  6. report intermediate trainining perplexity
         training_perplexity = train_metric.compute()
@@ -468,34 +387,6 @@ def test_model(model, opt, epoch):
     
     metric = Perplexity()
     metric.to(opt.device)
-
-    # set progress
-    # if epoch >= 0:
-    #     valid_dataset = TokensDataset(opt.valid, model.seqlen, device=opt.device)
-    #     val_loader = DataLoader(valid_dataset, batch_size=opt.batchsize, shuffle=False)
-    #     prog_bar = tqdm(val_loader)
-    # # NOTE the starter code calls testing "epoch -1"
-    # elif epoch < 0:
-    #     test_dataset = TokensDataset(opt.test, model.seqlen, device=opt.device)
-    #     test_loader = DataLoader(test_dataset, batch_size=opt.batchsize, shuffle=False)
-    #     prog_bar = tqdm(test_loader)
-
-    # for batch_index, (context_tokens, next_tokens) in enumerate(prog_bar):
-        #  3. send the indices of training tokens to the GPU
-        # context_tokens = context_tokens.to(opt.device)
-        # next_tokens = next_tokens.to(opt.device)
-
-        # # inference
-        # predictions = model.forward(
-        #     trg=context_tokens
-        # )
-
-        # # create shifted context + next token
-        # next_tokens = next_tokens
-        # shifted_context = torch.cat((context_tokens[:,1:], next_tokens), dim=1)
-
-        # # update perplexity metric
-        # metric.update(predictions, shifted_context)
 
     if epoch >= 0:
         data_iter = get_batch(opt.valid, opt.seqlen, opt.batchsize, opt.device)
@@ -547,10 +438,7 @@ def main():
     
     # NOTE this is changed from starter because it required cuda device
     opt.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # opt.device = 0 if opt.no_cuda is False else -1
-    # if opt.device == 0:
-    #     assert torch.cuda.is_available()
-    # opt.device = torch.device("cuda:0")
+    
     
     time_name = time.strftime("%y%m%d_%H%M%S")
     opt.time_name = time_name
@@ -595,16 +483,11 @@ def main():
     if opt.SGDR == True:
         opt.sched = CosineWithRestarts(opt.optimizer, T_max=opt.train_len)
 
-    # if opt.savename is not None:
-    #     try:
-    #         os.mkdir(opt.savename)
-    #     except:
-    #         nothing = 1
     opt.src_pad = 0
     opt.trg_pad = 0
             
-    train_perplexities, valid_perplexities = train_model(model,opt)
-    test_perplexity = test_model(model,opt,-1)
+    train_perplexities, valid_perplexities = train_model(model, opt)
+    test_perplexity = test_model(model, opt, -1)
 
     # learning curve plotting
     plt.plot([i+1 for i in range(len(train_perplexities))],[val for val in train_perplexities],label=f'Train Perplexity')
@@ -620,13 +503,9 @@ def main():
         
 if __name__ == "__main__":
     os.environ['TOKENIZERS_PARALLELISM'] = 'true'
-    # with torch.autograd.profiler.profile(use_cuda=True) as prof:
     main()
-    # print(prof.key_averages().table(sort_by="cuda_time_total"))
 
     # NOTE d_model is the embedding dimension
-
-    # HACK tuah
 
     '''
     debug command for making tiny model, good for local dev: 

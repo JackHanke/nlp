@@ -98,9 +98,10 @@ class Norm(nn.Module):
         return norm
 
 def attention(q, k, v, d_k, mask=None, dropout=None):
-    
-    scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
-    # TODO scores = torch.cdist(q , k, p=2)
+    # NOTE for question 4...
+    # scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
+    scores = torch.cdist(q , k, p=2)
+    # input(scores)
     
     if mask is not None:
         mask = mask.unsqueeze(1)
@@ -455,7 +456,7 @@ def main():
     tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
 
     if opt.dataset == 'wiki2':
-        opt.train = read_corpus('data/wiki2.train.txt',tokenizer), 
+        opt.train = read_corpus('data/wiki2.train.txt',tokenizer)
         opt.valid = read_corpus('data/wiki2.valid.txt',tokenizer)
         opt.test = read_corpus('data/wiki2.test.txt',tokenizer)
     elif opt.dataset == 'wiki103':
@@ -529,8 +530,9 @@ if __name__ == "__main__":
 
     python3 starter.py \
         -dir_name model_wiki103 \
-        -savename "saved/model_wiki103/model.pth" \
-        -batchsize 8 \
+        -savename "saved/model_wiki103/model_euclid.pth" \
+        - dataset "wiki103" \
+        -batchsize 16 \
         -epochs 1 \
 
     '''
