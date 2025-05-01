@@ -179,5 +179,7 @@ cython_debug/
 
 hw1/data/*
 !hw1/data/.gitkeep
-hw1/saved/model_wiki2/*
+hw1/saved/model_wiki2/*.pth
 !hw1/saved/model_wiki2/.gitkeep
+hw1/saved/model_wiki103/*.pth
+!hw1/saved/model_wiki103/.gitkeep
