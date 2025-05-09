@@ -307,5 +307,14 @@ if __name__ == "__main__":
         -batchsize 16 \
         -epochs 1 \
 
+    AWS script
+
+    python3 starter.py \
+        -dir_name model_wiki103 \
+        -savename "saved/model_wiki103/model.pth" \
+        - dataset "wiki103" \
+        -batchsize 16 \
+        -epochs 20
+
     '''
     

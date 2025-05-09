@@ -63,8 +63,8 @@ class Norm(nn.Module):
 
 def attention(q, k, v, d_k, mask=None, dropout=None):
     # NOTE for question 4...
-    # scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
-    scores = torch.cdist(q , k, p=2)
+    scores = torch.matmul(q, k.transpose(-2, -1)) /  math.sqrt(d_k)
+    # scores = torch.cdist(q , k, p=2)
     # input(scores)
     
     if mask is not None:
