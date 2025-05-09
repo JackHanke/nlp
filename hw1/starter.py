@@ -10,6 +10,7 @@ import math
 import pickle
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import logging
 
 import torch
 import torch.nn.functional as F
@@ -22,6 +23,8 @@ from torch.utils.data import Dataset, DataLoader, random_split
 from torch.amp import autocast, GradScaler
 
 from model import Transformer
+
+logger = logging.getLogger(__name__)
 
 # read corpus and structure as tensor
 def read_corpus(filename: str, tokenizer: callable):
@@ -68,6 +71,8 @@ def get_model(opt, src_vocab, trg_vocab):
 
 # training script     
 def train_model(model: torch.nn.Module, opt: any):
+    logging.basicConfig(filename='training.log', level=logging.DEBUG)
+
     # set model to train mode
     model.train()
 
@@ -106,6 +111,7 @@ def train_model(model: torch.nn.Module, opt: any):
                 train_loss_val = F.cross_entropy(predictions.view(-1, opt.vocab_size), y_batch.view(-1), ignore_index=-1)
 
                 prog_bar.set_description(f'Loss: {train_loss_val:.6f}')
+                logger.debug(f'Epoch {epoch} Batch {i} Loss: {train_loss_val}')
                 # update perplexity metric
                 train_metric.update(predictions, y_batch)
 
@@ -113,6 +119,7 @@ def train_model(model: torch.nn.Module, opt: any):
             scaler.scale(train_loss_val).backward()
             scaler.step(opt.optimizer)
             scaler.update()
+
 
         #  6. report intermediate trainining perplexity
         training_perplexity = train_metric.compute()
@@ -122,6 +129,8 @@ def train_model(model: torch.nn.Module, opt: any):
         prog_bar.set_description(update_string)
         training_perplexities.append(val)
 
+        logger.info(update_string)
+
         #  7. generate a test perplexity once per training epoch by calling test_model()
         valid_perplexity = test_model(model=model, opt=opt, epoch=epoch)
         val = valid_perplexity.cpu().item()
@@ -129,6 +138,8 @@ def train_model(model: torch.nn.Module, opt: any):
         print(update_string)
         prog_bar.set_description(update_string)
         valid_perplexities.append(val)
+
+        logger.info(update_string)
 
         #  8. save model weights to file specified in opt.savename
         if valid_perplexity < best_valid_perplexity:
