@@ -303,7 +303,7 @@ if __name__ == "__main__":
     python3 starter.py \
         -dir_name model_wiki103 \
         -savename "saved/model_wiki103/model_euclid.pth" \
-        - dataset "wiki103" \
+        -dataset "wiki103" \
         -batchsize 16 \
         -epochs 1 \
 
@@ -312,7 +312,7 @@ if __name__ == "__main__":
     python3 starter.py \
         -dir_name model_wiki103 \
         -savename "saved/model_wiki103/model.pth" \
-        - dataset "wiki103" \
+        -dataset "wiki103" \
         -batchsize 16 \
         -epochs 20
 
