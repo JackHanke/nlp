@@ -185,3 +185,6 @@ hw1/saved/model_wiki103/*.pth
 !hw1/saved/model_wiki103/.gitkeep
 # aws key
 nlpawskey.pem
+
+hw2/saves/*
+!hw2/saves/.gitkeep

@@ -19,7 +19,7 @@ def read_qa_json(file_name: str, verbose: bool = False):
             text = base + ' ' + result['question']['choices'][j]['text'] + ' [SEP] [END]'
             sentences.append(text)
 
-        data.append([sentences, [j]])
+        data.append([sentences, [ans]])
 
         if verbose:
             # NOTE for debugging

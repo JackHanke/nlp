@@ -10,7 +10,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 
 from utils import read_qa_json
-from model import QAModel
+from model import QAModel, train_model, test_model
 
 class QADataset(Dataset):
     def __init__(self, data: list):
@@ -45,26 +45,24 @@ def main(verbose: bool = False):
     optimizer = optim.Adam(model.parameters(), lr=3e-5)
     loss_fn = torch.nn.CrossEntropyLoss()
 
-    model.train()
-    epochs = 10
-    for epoch in range(epochs):
-        # 
-        prog_bar = tqdm(enumerate(train), total=len(train))
-        for i, (questions, labels) in prog_bar:
+    # baseline accuracy
+    acc = test_model(model=model, test=test)
+    print(f'Baseline test accuracy: {acc*100:.4f}')
 
-            optimizer.zero_grad()
+    # train model
+    train_model(
+        model=model, 
+        train=train, 
+        epochs=1,
+        optimizer=optimizer,
+        loss_fn=loss_fn,
+    )
 
-            pred = model.forward(sentences=sentences)
+    # get final accuracy
+    acc = test_model(model=model, test=test)
+    print(f'Final test accuracy: {acc*100:.4f}')
 
-            label_tensor = torch.Tensor(labels).long()
-
-            train_loss_val = loss_fn(pred, label_tensor)
-
-            prog_bar.set_description(f'Batch {i} Train loss: {train_loss_val:.6f}')
-
-            # 
-            train_loss_val.backward()
-            optimizer.step()
+    model.save(f'saves/')
            
                  
 if __name__ == "__main__":
