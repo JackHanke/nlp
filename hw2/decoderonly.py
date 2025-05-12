@@ -58,12 +58,6 @@ def test_model(model: nn.Module, test: list, masked: bool = False):
         pred_ans_tokens = torch.argmax(predictions[:, -1], dim=-1)
 
         temp = torch.sum(torch.eq(ans_tokens, pred_ans_tokens))
-        # if temp > 0:
-        #     print(ans_tokens)
-        #     print(pred_ans_tokens)
-        #     print(temp)
-        #     print(y_batch.size(0))
-        #     raise(Exception)
 
         num_right += torch.sum(torch.eq(ans_tokens, pred_ans_tokens))
         num_seen += y_batch.size(0)
@@ -352,7 +346,7 @@ class Transformer(nn.Module):
         print(f'Saved model as {savename}')
 
     @torch.no_grad()
-    def decode(self, trg):
+    def decode(self, trg, debug: bool = False):
         # generation settings
         tokens_generated = 0
         max_tokens = 20
@@ -381,4 +375,5 @@ class Transformer(nn.Module):
             else:
                 trg[i] = token_idx.item()
 
+        if debug: return inference_tokens, trg
         return inference_tokens
