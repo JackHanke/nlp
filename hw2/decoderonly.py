@@ -353,22 +353,32 @@ class Transformer(nn.Module):
 
     @torch.no_grad()
     def decode(self, trg):
-        max_tokens = 20
+        # generation settings
         tokens_generated = 0
+        max_tokens = 20
         token_idx = 0
         inference_tokens = []
 
+        # TODO something like below is better I think
+        # trg = trg[:-512].contiguous().to('cuda')
+        trg = trg.contiguous().to('cuda')
         while token_idx != 50256 and tokens_generated < max_tokens:
             logits = self.forward(trg=trg)
+            tokens_generated += 1
             # greedy decode
-            token_idx = torch.argmax(logits[:, -1], dim=1).item()
-            inference_tokens.append(token_idx)
-            # slide sequence
-            new_token = torch.tensor([token_idx]).to(self.device)
-            print(trg.shape)
-            print(new_token.shape)
-            trg = trg + new_token
-            # context cutoff
-            trg = trg[:self.seqlen]
+            token_idx = torch.argmax(logits[:, -1], dim=1)
+            inference_tokens.append(token_idx.item())
+            # find first index of first padding 
+            i = 0
+            while trg[i] != PAD_TOKEN_INDEX:
+                i+=1
+            # append
+            if i == trg.shape[0]-1:
+                trg = torch.cat(trg, token_idx)
+                # context cutoff
+                trg = trg[:self.seqlen]
+            # fill padding
+            else:
+                trg[i] = token_idx.item()
 
         return inference_tokens
