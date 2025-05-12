@@ -11,8 +11,14 @@ from torch.amp import autocast, GradScaler
 
 PAD_TOKEN_INDEX = 0
 
+def masked_accuracy(output: torch.Tensor, targer: torch.Tensor):
+    mask = target.ne(PAD_TOKEN_INDEX)
+    output = output.argmax(-1).masked_select(mask)
+    target = target.masked_select(mask)
+    return (output == target).float().mean()
+
 #
-def test_model(model: nn.Module, test: list):
+def test_model(model: nn.Module, test: list, masked: bool = False):
     model.eval()
 
     num_right = 0
@@ -73,6 +79,7 @@ def train_model(
         valid: torch.Tensor, 
         epochs: int,
         batch_size: int, 
+        only_last_token: bool,
         savename: str
     ):
 
@@ -112,29 +119,28 @@ def train_model(
                 # contigous conversion
                 y_batch = y_batch.contiguous()
 
-                last_tokens_pred = predictions[:, -1, :]
-                last_tokens = y_batch[:, -1]
+                if only_last_token:
+                    last_tokens_pred = predictions[:, -1, :]
+                    ans_tokens = []
+                    temp = y_batch != PAD_TOKEN_INDEX
+                    for i, row in enumerate(temp):
+                        valid_tokens = y_batch[i][row]
+                        ans_tokens.append(valid_tokens[-1])
 
-                ans_tokens = []
-                temp = y_batch != PAD_TOKEN_INDEX
-                for i, row in enumerate(temp):
-                    valid_tokens = y_batch[i][row]
-                    ans_tokens.append(valid_tokens[-1])
+                    ans_tokens = torch.stack(ans_tokens)
+                    # loss
+                    train_loss_val = F.cross_entropy(last_tokens_pred, ans_tokens, ignore_index=PAD_TOKEN_INDEX)
+                    # print(last_tokens_pred)
+                    # print(last_tokens_pred.shape)
+                    # print(ans_tokens)
+                    # print(ans_tokens.shape)
+                    # raise(Exception)
 
-                ans_tokens = torch.stack(ans_tokens)
-
-                # print(last_tokens_pred)
-                # print(last_tokens_pred.shape)
-                # print(ans_tokens)
-                # print(ans_tokens.shape)
-                # raise(Exception)
-
-                # loss
-                # train_loss_val = F.cross_entropy(predictions.view(-1, model.src_vocab), y_batch.view(-1), ignore_index=PAD_TOKEN_INDEX)
-                train_loss_val = F.cross_entropy(last_tokens_pred, ans_tokens, ignore_index=PAD_TOKEN_INDEX)
+                elif not only_last_token:
+                    # loss
+                    train_loss_val = F.cross_entropy(predictions.view(-1, model.src_vocab), y_batch.view(-1), ignore_index=PAD_TOKEN_INDEX)
 
                 prog_bar.set_description(f'Loss: {train_loss_val:.6f}')
-                # logger.debug(f'Epoch {epoch} Batch {i} Loss: {train_loss_val}')
 
             #  5. calculate and apply the gradients with loss.backward() and optimizer.step()
             scaler.scale(train_loss_val).backward()
@@ -143,7 +149,7 @@ def train_model(
 
         # validation
         acc, val_loss = test_model(model=model, test=valid)
-        print(f'Epoch {epoch} validation accuracy: {acc*100:.4f}. Validation Loss: {(sum(val_loss)/len(val_loss)):.4f}')
+        print(f'Epoch {epoch+1} validation accuracy: {acc*100:.4f}. Validation Loss: {(sum(val_loss)/len(val_loss)):.4f}')
 
     model.save(savename=savename)
 
@@ -344,3 +350,25 @@ class Transformer(nn.Module):
     def save(self, savename):
         torch.save(self.state_dict(), savename)
         print(f'Saved model as {savename}')
+
+    @torch.no_grad()
+    def decode(self, trg):
+        max_tokens = 20
+        tokens_generated = 0
+        token_idx = 0
+        inference_tokens = []
+
+        while token_idx != 50256 and tokens_generated < max_tokens:
+            logits = self.forward(trg=trg)
+            # greedy decode
+            token_idx = torch.argmax(logits[:, -1], dim=1).item()
+            inference_tokens.append(token_idx)
+            # slide sequence
+            new_token = torch.tensor([token_idx]).to(self.device)
+            print(trg.shape)
+            print(new_token.shape)
+            trg = trg + new_token
+            # context cutoff
+            trg = trg[:self.seqlen]
+
+        return inference_tokens
