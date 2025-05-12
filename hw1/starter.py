@@ -163,7 +163,7 @@ def test_model(model: torch.nn.Module, opt: any, epoch: int):
         data_iter = get_batches(data=opt.valid, seq_len=opt.seqlen, batch_size=opt.batchsize, device=opt.device, offset=epoch)
     # NOTE the starter code calls testing "epoch -1"
     elif epoch < 0:
-        data_iter = get_batches(data=opt.test, seq_len=opt.seqlen, batch_size=opt.batchsize, device=opt.device, offset=epoch)
+        data_iter = get_batches(data=opt.test, seq_len=opt.seqlen, batch_size=opt.batchsize, device=opt.device, offset=0)
 
     for i, (x_batch, y_batch) in enumerate(data_iter):
 
@@ -243,33 +243,46 @@ def main():
         temp.append(i)
     opt.indices = torch.tensor(temp)
     if not opt.no_cuda: opt.indices = opt.indices.cuda()
+
+    model = Transformer(
+        src_vocab=50257, 
+        trg_vocab=50257, 
+        d_model=512, 
+        N=6, 
+        heads=8, 
+        dropout=0.1, 
+        seqlen=512, 
+        device=opt.device,
+    )
+    model.load_state_dict(torch.load(f'../hw2/saves/pretrainedwiki103.pth', weights_only=True))
+    model.to(opt.device)
     
-    model = get_model(opt,opt.vocab_size,opt.vocab_size)
+    # model = get_model(opt,opt.vocab_size,opt.vocab_size)
         
-    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-    params = sum([np.prod(p.size()) for p in model_parameters])        
-    text = 'total params: %d' % (params)
-    print(text)
+    # model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    # params = sum([np.prod(p.size()) for p in model_parameters])        
+    # text = 'total params: %d' % (params)
+    # print(text)
 
-    opt.optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr, betas=(0.9, 0.98), eps=1e-9)
-    if opt.SGDR == True:
-        opt.sched = CosineWithRestarts(opt.optimizer, T_max=opt.train_len)
+    # opt.optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr, betas=(0.9, 0.98), eps=1e-9)
+    # if opt.SGDR == True:
+    #     opt.sched = CosineWithRestarts(opt.optimizer, T_max=opt.train_len)
 
-    opt.src_pad = 0
-    opt.trg_pad = 0
+    # opt.src_pad = 0
+    # opt.trg_pad = 0
             
-    train_perplexities, valid_perplexities = train_model(model, opt)
+    # train_perplexities, valid_perplexities = train_model(model, opt)
     test_perplexity = test_model(model, opt, -1)
 
     # learning curve plotting
-    plt.plot([i+1 for i in range(len(train_perplexities))],[val for val in train_perplexities],label=f'Train Perplexity')
-    plt.plot([i+1 for i in range(len(valid_perplexities))],[val for val in valid_perplexities],label=f'Validation Perplexity')
-    plt.legend()
-    plt.ylabel(f'Perplexity')
-    plt.xlabel(f'Epochs')
-    plt.title(f'{opt.dataset} Training/Validation Curves')
-    # plt.show()
-    plt.savefig(f'./wiki2_learning_curve.png')
+    # plt.plot([i+1 for i in range(len(train_perplexities))],[val for val in train_perplexities],label=f'Train Perplexity')
+    # plt.plot([i+1 for i in range(len(valid_perplexities))],[val for val in valid_perplexities],label=f'Validation Perplexity')
+    # plt.legend()
+    # plt.ylabel(f'Perplexity')
+    # plt.xlabel(f'Epochs')
+    # plt.title(f'{opt.dataset} Training/Validation Curves')
+    # # plt.show()
+    # plt.savefig(f'./wiki2_learning_curve.png')
 
     print(f'Test perplexity: {test_perplexity}')
         

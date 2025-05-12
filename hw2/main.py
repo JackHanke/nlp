@@ -46,6 +46,7 @@ def bert_finetuning(
     # save model
     model.save()
 
+# NOTE Question 2: 
 
 
 
