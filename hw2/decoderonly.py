@@ -11,7 +11,7 @@ from torch.amp import autocast, GradScaler
 
 PAD_TOKEN_INDEX = 0
 
-def masked_accuracy(output: torch.Tensor, targer: torch.Tensor):
+def masked_accuracy(output: torch.Tensor, target: torch.Tensor):
     mask = target.ne(PAD_TOKEN_INDEX)
     output = output.argmax(-1).masked_select(mask)
     target = target.masked_select(mask)
@@ -376,4 +376,25 @@ class Transformer(nn.Module):
                 trg[i] = token_idx.item()
 
         if debug: return inference_tokens, trg
+        return inference_tokens
+    
+    @torch.no_grad()
+    def decode(self, trg, debug: bool = False):
+        max_tokens = 20
+        inference_tokens = []
+        
+        for _ in range(max_tokens):
+            logits = self.forward(trg=trg)
+            next_token = torch.argmax(logits[:, -1], dim=-1)  # [batch]
+            inference_tokens.append(next_token.item())
+
+            # Append next token to trg
+            trg = torch.cat([trg, next_token.unsqueeze(0)], dim=1)
+            trg = trg[:, -self.seqlen:]  # context cuttoff
+
+            if next_token.item() == 50256:  # EOS token for GPT2 tokenier
+                break
+
+        if debug:
+            return inference_tokens, trg
         return inference_tokens
