@@ -80,7 +80,7 @@ def read_qa_json_generative_q3(file_name: str, verbose: bool = False):
         for j in range(4):
             base += f' [{answers[j]}] ' + result['question']['choices'][j]['text']
 
-        base += ' Answer [' + result['answerKey'] + '] ' + result['question']['choices'][ans]['text'] + ' <|endoftext|>'
+        base += ' Answer [' + result['answerKey'] + '] ' + result['question']['choices'][ans]['text']
 
         data.append(base)
         

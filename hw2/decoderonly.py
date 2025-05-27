@@ -8,8 +8,13 @@ import torch.nn.functional as F
 import torch.nn as nn
 from torch.autograd import Variable
 from torch.amp import autocast, GradScaler
+from transformers import GPT2TokenizerFast
+
+from nlp_metrics import *
 
 PAD_TOKEN_INDEX = 0
+
+tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
 
 def masked_accuracy(output: torch.Tensor, target: torch.Tensor):
     mask = target.ne(PAD_TOKEN_INDEX)
@@ -26,6 +31,8 @@ def test_model(model: nn.Module, test: list, masked: bool = False):
     num_total = len(test)
 
     validation_loss = []
+
+    bleu, rouge, bert = 0, 0, 0
 
     prog_bar = tqdm(enumerate(test), total=num_total)
     for i, (x_batch, y_batch) in prog_bar:
@@ -46,24 +53,53 @@ def test_model(model: nn.Module, test: list, masked: bool = False):
         valid_loss_val = F.cross_entropy(predictions.view(-1, model.src_vocab), y_batch.view(-1), ignore_index=PAD_TOKEN_INDEX)
         validation_loss.append(valid_loss_val.item())
 
-        # NOTE validation accuracy
-        ans_tokens = []
-        temp = y_batch != PAD_TOKEN_INDEX
-        for i, row in enumerate(temp):
-            valid_tokens = y_batch[i][row]
-            ans_tokens.append(valid_tokens[-1])
-
-        ans_tokens = torch.stack(ans_tokens)
-
         pred_ans_tokens = torch.argmax(predictions[:, -1], dim=-1)
+        # NOTE validation accuracy
+        # if next token accuracy
+        if not masked:
+            ans_tokens = []
+            temp = y_batch != PAD_TOKEN_INDEX
+            for i, row in enumerate(temp):
+                valid_tokens = y_batch[i][row]
+                ans_tokens.append(valid_tokens[-1])
 
-        temp = torch.sum(torch.eq(ans_tokens, pred_ans_tokens))
+            ans_tokens = torch.stack(ans_tokens)
+ 
+            temp = torch.sum(torch.eq(ans_tokens, pred_ans_tokens))
 
-        num_right += torch.sum(torch.eq(ans_tokens, pred_ans_tokens))
-        num_seen += y_batch.size(0)
+            num_right += torch.sum(torch.eq(ans_tokens, pred_ans_tokens))
 
-        prog_bar.set_description(f'Question {num_seen}: {(100*num_right/num_seen):.4f} percent. Validation Loss: {valid_loss_val:.4f}')
+            num_seen += y_batch.size(0)
 
+            prog_bar.set_description(f'Question {num_seen}: {(100*num_right/num_seen):.4f} percent. Validation Loss: {valid_loss_val:.4f}')
+
+        # if masked accuracy
+        elif masked:
+            num_right += masked_accuracy(output=predictions, target=y_batch)
+
+            for i in range(y_batch.shape[0]):
+                # exmp_str = tokenizer.decode(y_batch[i], skip_special_tokens=True).replace('!', '')
+                # pred_string = tokenizer.decode(pred_ans_tokens[i], skip_special_tokens=True).replace('!', '')
+                exmp_str = tokenizer.decode(y_batch[i]).replace('!', '')
+                pred_string = tokenizer.decode(pred_ans_tokens[i]).replace('!', '')
+
+                # god this sucks
+                min_len = min(len(exmp_str), len(pred_string))
+                # print(len(exmp_str))
+                # print(len(pred_string))
+
+                bleu += compute_bleu(reference=exmp_str.split(), candidate=pred_string.split())
+                rouge += compute_rouge(reference=exmp_str, candidate=pred_string)['rouge1'].fmeasure
+                # bert += compute_bertscore(references=exmp_str[:min_len].split(), candidates=pred_string[:min_len].split())[2][0]
+
+            num_seen += y_batch.size(0)
+            prog_bar.set_description(f'Bleu: {(bleu/num_seen):.4f} ROUGE: {(rouge/num_seen):.4f} BERT: {(bert/num_seen):.4f}')
+
+        bleu = bleu / num_seen
+        rouge = rouge / num_seen
+        bert = bert / num_seen
+
+    if masked: return num_right/num_seen, validation_loss, bleu, rouge, bert
     return num_right/num_seen, validation_loss
 
 # training script     
@@ -124,11 +160,6 @@ def train_model(
                     ans_tokens = torch.stack(ans_tokens)
                     # loss
                     train_loss_val = F.cross_entropy(last_tokens_pred, ans_tokens, ignore_index=PAD_TOKEN_INDEX)
-                    # print(last_tokens_pred)
-                    # print(last_tokens_pred.shape)
-                    # print(ans_tokens)
-                    # print(ans_tokens.shape)
-                    # raise(Exception)
 
                 elif not only_last_token:
                     # loss
@@ -181,7 +212,7 @@ class PositionalEncoder(nn.Module):
         pe = self.pe
         # if x.is_cuda:
         #     pe.cuda()
-        x = x + self.pe
+        x = x + self.pe[:, :x.size(1)]
         return self.dropout(x)
 
 class Norm(nn.Module):
@@ -328,11 +359,13 @@ class Transformer(nn.Module):
         nopeak_mask = np.triu(np.ones((1, self.seqlen, self.seqlen)), k=1).astype('uint8')
         self.nopeak_mask = Variable(torch.from_numpy(nopeak_mask) == 0).to(self.device)
 
-    def forward(self, trg, trg_mask = None):
+    def forward(self, trg, trg_mask = None, inference_mode: bool = False):
         if trg_mask is None:
             trg_mask = self.nopeak_mask
         elif trg_mask is not None:
             trg_mask = trg_mask & self.nopeak_mask
+        if inference_mode:
+            trg_mask = None
 
         # print(trg_mask[0])
         # print(f'trg_mask shape: {trg_mask.shape}')
@@ -357,7 +390,7 @@ class Transformer(nn.Module):
         # trg = trg[:-512].contiguous().to('cuda')
         trg = trg.contiguous().to('cuda')
         while token_idx != 50256 and tokens_generated < max_tokens:
-            logits = self.forward(trg=trg)
+            logits = self.forward(trg=trg, inference_mode=True)
             tokens_generated += 1
             # greedy decode
             token_idx = torch.argmax(logits[:, -1], dim=1)
@@ -379,12 +412,14 @@ class Transformer(nn.Module):
         return inference_tokens
     
     @torch.no_grad()
-    def decode(self, trg, debug: bool = False):
+    def decode_danya(self, trg, debug: bool = False):
+        trg = trg.contiguous().to(self.device)
+
         max_tokens = 20
         inference_tokens = []
         
         for _ in range(max_tokens):
-            logits = self.forward(trg=trg)
+            logits = self.forward(trg=trg, inference_mode=True)
             next_token = torch.argmax(logits[:, -1], dim=-1)  # [batch]
             inference_tokens.append(next_token.item())
 
