@@ -20,7 +20,7 @@ def custom_collate(batch):
 
 # dataset
 class OpenBookQADataset(Dataset):
-    def __init__(self, jsonl_path, tokenizer):
+    def __init__(self, jsonl_path, tokenizer, prefix: str = None):
         self.data = []
         with open(jsonl_path, "r") as f:
             for line in f:
@@ -31,7 +31,11 @@ class OpenBookQADataset(Dataset):
                 choices = ex["question"]["choices"]
                 label = next(i for i, c in enumerate(choices) if c["label"] == ex["answerKey"])
                 for choice in choices:
-                    text = f"{fact} {stem} {choice['text']}"
+                    if prefix is None:
+                        text = f"{fact} {stem} {choice['text']}"
+                    else:
+                        text = f"{prefix}{fact} {stem} {choice['text']}"
+
                     enc = tokenizer(text, truncation=True, padding="max_length", max_length=MAX_LENGTH, return_tensors="pt")
                     # print(type(enc['input_ids']))
                     # print(type(enc))
