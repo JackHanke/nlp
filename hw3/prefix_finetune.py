@@ -36,7 +36,7 @@ def train_prefix():
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)  
 
-    print("Starting Adapter Tuning...")
+    print("Starting Prefix Tuning...")
     start = time.time()
     model.train()
     for epoch in range(EPOCHS):

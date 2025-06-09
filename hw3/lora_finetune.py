@@ -13,38 +13,65 @@ BATCH_SIZE = 4
 EPOCHS = 3
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
 
-# LoRA
-class LoRAdapter(nn.Module):
+# LoRA module to replace BERT key, value, query matrices
+class LoRAAdapter(nn.Module):
     # using notation from original paper
-    def __init__(self, hidden_size, bottleneck_size=6, dropout=0.1):
+    def __init__(self, original_layer, bottleneck_size=6, dropout=0.1):
         super().__init__()
+        self.original_layer = original_layer
+        self.hidden_size = original_layer.in_features
+        
         # no biases
-        self.A = nn.Linear(hidden_size, bottleneck_size, bias=False)
-        self.B = nn.Linear(bottleneck_size, hidden_size, bias=False)
-        # zero weights of B in
+        self.A = nn.Linear(self.hidden_size, bottleneck_size, bias=False)
+        self.B = nn.Linear(bottleneck_size, self.hidden_size, bias=False)
+        # zero weights of B
         nn.init.zeros_(self.B.weight)
-        nn.init.zeros_(self.B.bias)
 
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
+        # original forward pass
+        original_x = self.original_layer(x)
+        # LoRA forward pass
         x = self.A(x)
-        x = self.B(x)
-        return self.dropout(x)
+        lora_x = self.B(x)
+        return original_x + self.dropout(lora_x)
 
 class BertWithLoRA(nn.Module):
     def __init__(self, adapter_dim=128):
         super().__init__()
         self.bert = BertModel.from_pretrained(BERT_MODEL, output_hidden_states=True)
-        self.adapters = nn.ModuleList([
-            LoRAdapter(self.bert.config.hidden_size, adapter_dim)
-            for _ in range(self.bert.config.num_hidden_layers)
-        ])
-        self.classifier = nn.Linear(self.bert.config.hidden_size, 1)
+        self.classifier = nn.Linear(self.bert.config.hidden_size, 4)
+
+
+        # return lora_layers
+        target_modules=["query", "key", "value"]
+        for name, module in self.bert.named_modules():
+            if isinstance(module, nn.Linear):
+                # Check if this linear layer's name matches one of our target modules
+                # This requires careful inspection of the model's architecture.
+                # For BertSelfAttention, layers are often named 'query', 'key', 'value', 'output.dense'
+                if any(target_key in name for target_key in target_modules):
+                    # Replace the module
+                    # Get the parent module and set its attribute
+                    parts = name.split('.')
+                    print(parts)
+                    # get deepest module (the key, query, and value matrix)
+                    parent_module = self.bert
+                    for part in parts[:-1]:
+                        parent_module = getattr(parent_module, part)
+                    # replace matrix with LoRA version
+                    setattr(parent_module, parts[-1], LoRAAdapter(original_layer=module))
+                    print(f"Replaced {name} with LoRALinear.")
 
         # freeze BERT params
         for param in self.bert.parameters():
             param.requires_grad = False
+        # unfreeze Lora matrices
+        for name, param in self.bert.named_parameters():
+            if "A" in name or "B" in name:
+                param.requires_grad = True
+                print(f"Unfrozen LoRA parameter: {name}")
 
     def forward(self, batch_encodings):
         logits = []
