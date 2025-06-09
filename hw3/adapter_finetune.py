@@ -55,10 +55,6 @@ class BertWithAdapters(nn.Module):
             for i, adapter in enumerate(self.adapters):
                 hidden_states[i + 1] = adapter(hidden_states[i + 1])
             cls_embed = hidden_states[-1][:, 0, :]
-            
-            # now only adapting the last hidden layer
-            #adapted = self.adapters[-1](hidden_states[-1])
-            #cls_embed = adapted[:, 0, :]
 
             logit = self.classifier(cls_embed)
             logits.append(logit)
@@ -77,6 +73,9 @@ def train_adapters():
 
     model = BertWithAdapters().to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)  
+
+    learnable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f'Number of learnable parameters: {learnable_params:,}')
 
     print("Starting Adapter Tuning...")
     start = time.time()

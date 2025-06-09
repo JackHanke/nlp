@@ -16,14 +16,14 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # LoRA module to replace BERT key, value, query matrices
 class LoRAAdapter(nn.Module):
     # using notation from original paper
-    def __init__(self, original_layer, bottleneck_size=6, dropout=0.1):
+    def __init__(self, original_layer, r, dropout=0.1):
         super().__init__()
         self.original_layer = original_layer
         self.hidden_size = original_layer.in_features
         
         # no biases
-        self.A = nn.Linear(self.hidden_size, bottleneck_size, bias=False)
-        self.B = nn.Linear(bottleneck_size, self.hidden_size, bias=False)
+        self.A = nn.Linear(self.hidden_size, r, bias=False)
+        self.B = nn.Linear(r, self.hidden_size, bias=False)
         # zero weights of B
         nn.init.zeros_(self.B.weight)
 
@@ -38,11 +38,10 @@ class LoRAAdapter(nn.Module):
         return original_x + self.dropout(lora_x)
 
 class BertWithLoRA(nn.Module):
-    def __init__(self, adapter_dim=128):
+    def __init__(self, r=32):
         super().__init__()
         self.bert = BertModel.from_pretrained(BERT_MODEL, output_hidden_states=True)
         self.classifier = nn.Linear(self.bert.config.hidden_size, 4)
-
 
         # return lora_layers
         target_modules=["query", "key", "value"]
@@ -55,23 +54,22 @@ class BertWithLoRA(nn.Module):
                     # Replace the module
                     # Get the parent module and set its attribute
                     parts = name.split('.')
-                    print(parts)
                     # get deepest module (the key, query, and value matrix)
                     parent_module = self.bert
                     for part in parts[:-1]:
                         parent_module = getattr(parent_module, part)
                     # replace matrix with LoRA version
-                    setattr(parent_module, parts[-1], LoRAAdapter(original_layer=module))
-                    print(f"Replaced {name} with LoRALinear.")
+                    setattr(parent_module, parts[-1], LoRAAdapter(original_layer=module, r=r))
+                    # print(f"Replaced {name} with LoRALinear.")
 
         # freeze BERT params
         for param in self.bert.parameters():
             param.requires_grad = False
-        # unfreeze Lora matrices
+        # unfreeze LoRA matrices
         for name, param in self.bert.named_parameters():
             if "A" in name or "B" in name:
                 param.requires_grad = True
-                print(f"Unfrozen LoRA parameter: {name}")
+                # print(f"Unfrozen LoRA parameter: {name}")
 
     def forward(self, batch_encodings):
         logits = []
@@ -83,13 +81,7 @@ class BertWithLoRA(nn.Module):
             output = self.bert(**input_dict)
             hidden_states = list(output.hidden_states)
 
-            for i, adapter in enumerate(self.adapters):
-                hidden_states[i + 1] = adapter(hidden_states[i + 1])
             cls_embed = hidden_states[-1][:, 0, :]
-            
-            # now only adapting the last hidden layer
-            #adapted = self.adapters[-1](hidden_states[-1])
-            #cls_embed = adapted[:, 0, :]
 
             logit = self.classifier(cls_embed)
             logits.append(logit)
@@ -110,7 +102,10 @@ def train_lora():
     model = BertWithLoRA().to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)  
 
-    print("Starting Adapter Tuning...")
+    learnable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f'Number of learnable parameters: {learnable_params:,}')
+
+    print("Starting LoRA Tuning...")
     start = time.time()
     model.train()
     for epoch in range(EPOCHS):

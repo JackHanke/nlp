@@ -18,7 +18,7 @@ def train_prefix():
 
     prefix_token = '[QAPrefix]'
     special_tokens_dict = {'additional_special_tokens': [prefix_token]}
-    num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
+    tokenizer.add_special_tokens(special_tokens_dict)
     # make prefix dataset
     train_set = OpenBookQADataset("train_complete.jsonl", tokenizer, prefix=prefix_token)
     val_set = OpenBookQADataset("dev_complete.jsonl", tokenizer, prefix=prefix_token)
@@ -32,9 +32,12 @@ def train_prefix():
         param.requires_grad = False
     
     # add extra embedding to BERT for prefix
-    model.resize_token_embeddings(len(tokenizer))
+    model.resize_token_embeddings(new_num_tokens=1)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)  
+
+    learnable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f'Number of learnable parameters: {learnable_params:,}')
 
     print("Starting Prefix Tuning...")
     start = time.time()

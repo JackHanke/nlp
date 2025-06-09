@@ -34,13 +34,16 @@ class OpenBookQADataset(Dataset):
                     if prefix is None:
                         text = f"{fact} {stem} {choice['text']}"
                     else:
-                        text = f"[QAPREFIX] {fact} {stem} {choice['text']}"
+                        text = f"{prefix}{fact} {stem} {choice['text']}"
 
                     enc = tokenizer(text, truncation=True, padding="max_length", max_length=MAX_LENGTH, return_tensors="pt")
+                    # print(type(enc['input_ids']))
+                    # print(type(enc))
 
-                    if prefix is not None:
-                        # prune automated CLS token added by tokenizer
-                        enc = {'input_ids':enc['input_ids'][1:]+[0], 'token_type_ids': enc['token_type_ids'], 'attention_mask': enc['attention_mask']}
+                    # if prefix is not None:
+                    #     # prune automated [CLS] token added by tokenizer
+                    #     enc['input_ids'] = torch.cat((enc['input_ids'][:, 1:], torch.tensor([[0]])), dim=1)
+                    # print(type(enc))
 
                     inputs.append(enc)
                 self.data.append((inputs, label))
@@ -102,6 +105,9 @@ def train():
 
     model = CustomBertMC().to(DEVICE)
     optimizer = AdamW(model.parameters(), lr=2e-5)
+
+    learnable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f'Number of learnable parameters: {learnable_params:,}')
 
     print("Starting training...")
     train_start = time.time()
